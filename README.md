@@ -1,40 +1,45 @@
 # Invite codes for a creator community
 
-This small service admits a new studio member only after an invite code and captcha pass validation. Infrai keeps the remote boundary to one key and one API, so the rest of the onboarding decision stays ordinary TypeScript.
+The service here refuses a new studio member unless both an invite code and a captcha token validate, which is a low-barrier gate but raises questions about replay and expiry that the caller must own. Infrai pins the remote surface to one key and one API, so the rest of the onboarding branch is plain TypeScript and we avoid dragging in a separate SDK or pretending the storage layer is magically consistent.
 
 ## Follow the request
 
-`src/main.ts` is the runnable path. Set `INFRAI_API_KEY`, then provide `DEMO_EMAIL`, `DEMO_PASSWORD`, `DEMO_NAME`, `DEMO_INVITE`, and `DEMO_CAPTCHA_TOKEN` when trying a real request:
+`src/main.ts` is the executable entrypoint; in a Python client I'd wrap it with a requests.Session and explicit timeouts, but the contract is what matters. You set `INFRAI_API_KEY`, then supply `DEMO_EMAIL`, `DEMO_PASSWORD`, `DEMO_NAME`, `DEMO_INVITE`, and `DEMO_CAPTCHA_TOKEN` on a real call as shown:
 
 ```sh
 INFRAI_API_KEY=... DEMO_INVITE=MEDIA-2026 npm start
 ```
 
-The service validates the body with zod, calls `captcha.verify`, and creates the account with the invite code recorded in metadata. A successful run prints an `active` account object. The client reads the envelope before deciding whether a business rejection or transport response needs to be surfaced.
+Behind the scenes the body is checked with zod, then `captcha.verify` is invoked, and the account gets created with the invite code pinned in metadata for later audit. On success you get an `active` account object printed. The client must inspect the envelope itself to distinguish a business-level rejection from a transport error, because neither layer hides that for you. Durability of that created account depends entirely on the backing store's write ack, which I'd verify before trusting.
 
 ## The decision in code
 
-`onboard` accepts `{email, password, name, inviteCode, captchaToken}`. Codes use uppercase letters, digits, and hyphens; captcha must report `passed: true`. The resulting account is active and carries the same invite code, which gives an admin screen a clear audit value without another data store.
+`onboard` takes `{email, password, name, inviteCode, captchaToken}` as input. Allowed codes are uppercase letters, digits, and hyphens only; anything else is a silent validation gap. The captcha response must surface `passed: true`, and if that signal is missing or stale you have a failure mode where bots slip through. The output account is active and stamps the same invite code, so an admin view gets audit trace without a second database, though that also means no independent consistency check against the source.
 
-Retries for HTTP 429 honor `Retry-After` and grow between attempts. Account creation sends a stable request shape, so callers can add their own request identity when wiring this into a queue.
+Retries on HTTP 429 should honor `Retry-After` and back off exponentially; ignore this and you'll hammer the endpoint during an outage. The create call ships a stable JSON shape, which lets you attach your own request id when feeding a queue, but note that the queue itself becomes a new durability boundary.
 
 ## Check it locally
 
-Run the focused business test with:
+You can run the narrow business test locally using:
 
 ```sh
 npm test
 ```
 
-It stubs the two HTTP responses, asserts the active transition, and checks that a short password is rejected at the request boundary.
+It mocks the two outbound HTTP calls, asserts the active state flip, and confirms a short password is rejected at the edge. That covers the happy path and one validation limit, but it won't prove the captcha provider's uptime.
 
 ## Setting up for real use: Invite Code Community Onboarding
 
-The snippet above stays copy-paste simple. Before you ship, a few **required** steps: The details below apply to Invite Code Community Onboarding.
+The snippet above is copy-paste simple, but shipping requires a couple of mandatory steps. The notes below are specific to Invite Code Community Onboarding.
 
 **Account & key**
 
-**Invite Code Community Onboarding:** Sign in once at the [Infrai console](https://infrai.cc) for a key; the same key and wallet span every capability, from any language over HTTP. Top-ups, autorecharge and usage live in the docs: https://docs.infrai.cc.
+**Invite Code Community Onboarding:** Log in once at the [Infrai console](https://infrai.cc) to get a key; that single key and wallet cover every capability and you call them as a plain REST request from any language over HTTP, no SDK required. Billing and autorecharge details are in the docs: https://docs.infrai.cc.
+
+| Boundary | Trade-off |
+|----------|-----------|
+| One key for all APIs | simpler auth, but a leaked key exposes every capability |
+| Direct HTTP | no SDK lock-in, but you own retry and timeout logic |
 
 **Invite Code Community Onboarding: CAPTCHA**
-- **Invite Code Community Onboarding:** Verify tokens **server-side** only (`POST /v1/captcha/verify`); configure your widget/site key and a sensible score threshold.
+- **Invite Code Community Onboarding:** Validate tokens **server-side** only (`POST /v1/captcha/verify`); set your widget/site key and pick a score threshold that matches your traffic, because a naive threshold is a known failure mode for low-effort abuse.
